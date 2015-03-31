@@ -1,0 +1,9 @@
+<launch>
+  <!-- start the mapbuilder -->
+  <arg name="scan_topic" default="base_scan"/>
+  <node name="slam_gmapping" pkg="gmapping" type="slam_gmapping" output="screen">
+    <!-- param name="base_frame" value="base"/ -->
+    <param name="odom_frame" value="odom_combined"/>
+    <remap from="scan" to="$(arg scan_topic)"/>
+  </node>
+</launch>
