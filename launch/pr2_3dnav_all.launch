@@ -1,4 +1,4 @@
 <launch>
-  <include file="$(find pr2_3dnav)/launch/pr2_nav3d_gazebo.launch"/>
-  <include file="$(find pr2_3dnav)/launch/pr2_nav3d_slam.launch"/>
+  <include file="$(find pr2_3dnav)/launch/pr2_3dnav_gazebo.launch"/>
+  <include file="$(find pr2_3dnav)/launch/pr2_3dnav_slam.launch"/>
 </launch>
