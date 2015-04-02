@@ -1,0 +1,7 @@
+<launch>
+  <arg name="map" default="geb78_small"/>
+
+  <!--start 2d mapserver and localization-->
+  <node name="map_server" pkg="map_server" type="map_server" args="$(find pr2_3dnav)/maps/$(arg map).yaml"/>
+  <include file="$(find pr2_navigation_global)/amcl_node.xml"/>
+</launch>
