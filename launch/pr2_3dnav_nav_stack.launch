@@ -1,0 +1,10 @@
+<launch>
+  <arg name="world" default="geb78_small" />
+  <!-- Run the map-servers -->
+  <include file="$(find pr2_3dnav)/launch/pr2_3dnav_amcl.launch" >
+    <arg name="map" value="$(arg world)" />
+  </include>
+  <include file="$(find pr2_3dnav)/launch/pr2_3dnav_octomap_server.launch" >
+    <arg name="map" value="$(arg world)" />
+  </include>
+</launch>
