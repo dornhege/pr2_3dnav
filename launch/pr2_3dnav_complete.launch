@@ -1,5 +1,0 @@
-<launch>
-  <include file="$(find pr2_3dnav)/launch/pr2_3dnav_gazebo.launch"/>
-  <include file="$(find pr2_3dnav)/launch/pr2_3dnav_amcl.launch"/>
-  <include file="$(find pr2_3dnav)/launch/pr2_3dnav_octomap_server.launch"/>
-</launch>
