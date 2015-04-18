@@ -1,0 +1,3 @@
+BPLLatticePlanner:
+  environment_type: XYThetaLattice
+  planner_type: ARAPlanner 

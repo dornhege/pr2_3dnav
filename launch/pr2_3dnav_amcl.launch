@@ -1,7 +1,7 @@
 <launch>
   <arg name="map" default="geb78_small"/>
   <!--start 2d mapserver-->
-  <node name="map_server" pkg="map_server" type="map_server" args="$(find pr2_3dnav)/maps/$(arg map).yaml"/>
+  <node name="map_server" pkg="map_server" type="map_server" args="$(find pr2_3dnav)/worlds/$(arg map)/$(arg map).yaml"/>
   <node pkg="amcl" type="amcl" name="amcl">
   <!-- node pkg="amcl" type="amcl" name="amcl" machine="c2" -->
     <remap from="scan" to="base_scan" />

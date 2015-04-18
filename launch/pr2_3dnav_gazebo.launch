@@ -7,7 +7,7 @@
 
   <include file="$(find pr2_gazebo)/launch/pr2.launch"/>
   <!-- start empty world -->
-  <node name="gazebo" pkg="gazebo_ros" type="gzserver" args="-u $(find pr2_3dnav)/worlds/$(arg world).world" respawn="false" output="screen"/>
+  <node name="gazebo" pkg="gazebo_ros" type="gzserver" args="-u $(find pr2_3dnav)/worlds/$(arg world)/$(arg world).world" respawn="false" output="screen"/>
   
   <!-- start gui -->
   <group if="$(arg gui)">

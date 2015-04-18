@@ -1,10 +1,14 @@
 <launch>
   <arg name="world" default="geb78_small" />
+  <arg name="use_sbpl" default="false" />
   <!-- Run the map-servers -->
   <include file="$(find pr2_3dnav)/launch/pr2_3dnav_amcl.launch" >
     <arg name="map" value="$(arg world)" />
   </include>
   <include file="$(find pr2_3dnav)/launch/pr2_3dnav_octomap_server.launch" >
     <arg name="map" value="$(arg world)" />
+  </include>
+  <include file="$(find pr2_3dnav)/launch/pr2_3dnav_move_base.launch">
+    <arg name="use_sbpl" value="$(arg use_sbpl)" />
   </include>
 </launch>
