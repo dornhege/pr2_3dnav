@@ -11,7 +11,7 @@
     <remap from="cmd_vel" to="base_controller/command" />
     
     <!-- Use the dwa local planner for the PR2 -->
-    <!-- param name="base_local_planner" value="PoseFollower" / -->
+    <param name="base_local_planner" value="PoseFollower" />
     <param name="base_global_planner" value="SBPLLatticePlanner"/>
     <param name="SBPLLatticePlanner/primitive_filename" value="$(find pr2_3dnav)/mprims/$(arg mprim).mprim" />
     <rosparam file="$(find pr2_3dnav)/configs/sbpl_global_planner.yaml" command="load" ns="SBPLPlannerROS"/>
