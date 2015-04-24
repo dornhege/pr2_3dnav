@@ -4,6 +4,7 @@
   <node name="slam_gmapping" pkg="gmapping" type="slam_gmapping" output="screen">
     <!-- param name="base_frame" value="base"/ -->
     <param name="odom_frame" value="odom_combined"/>
+    <param name="delta" value="0.025" />
     <remap from="scan" to="$(arg scan_topic)"/>
   </node>
 </launch>

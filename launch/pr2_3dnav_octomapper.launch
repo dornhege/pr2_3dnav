@@ -1,0 +1,8 @@
+<launch>
+  <arg name="cloudin" default="/head_mount_kinect/depth_registered/points" />
+  
+  <node name="octomap_server" pkg="octomap_server" type="octomap_server_node" >
+    <param name="resolution" value="0.025" />
+    <param name="cloud_in" value="$(arg cloudin)" />
+  </node>
+</launch>
