@@ -1,3 +1,4 @@
 BPLLatticePlanner:
   environment_type: XYThetaLattice
   planner_type: ARAPlanner
+  forward_search: true
