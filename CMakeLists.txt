@@ -4,10 +4,16 @@ project(pr2_3dnav)
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
-find_package(catkin REQUIRED COMPONENTS
-  gmapping
-  pr2_gazebo
-)
+#find_package(catkin REQUIRED COMPONENTS
+#  gmapping
+#  pr2_gazebo
+#  octomap_server
+#  map_server
+#  move_base
+#  pr2_move_base
+#  sbpl_lattice_planner
+#  pose_follower
+#)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)

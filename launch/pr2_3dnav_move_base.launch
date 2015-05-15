@@ -13,13 +13,13 @@
 
     <!-- Load the local planner -->
     <param name="base_local_planner" value="PoseFollower" />
-    <rosparam file="$(find pr2_3dnav)/configs/posefollower_local_planner.yaml" command="load" ns="PoseFollower" />
+    <rosparam file="$(find pr2_3dnav)/configs/posefollower_local_planner.yaml" command="load" />
     <rosparam file="$(find pr2_3dnav)/configs/recovery_behaviors.yaml" command="load" />
  
     <!-- Load the local planner -->
     <param name="base_global_planner" value="SBPLLatticePlanner" />
     <param name="SBPLLatticePlanner/primitive_filename" value="$(find pr2_3dnav)/mprims/$(arg mprim).mprim" />
-    <rosparam file="$(find pr2_3dnav)/configs/sbpl_global_planner.yaml" command="load" ns="SBPLPlannerROS" />
+    <rosparam file="$(find pr2_3dnav)/configs/sbpl_global_planner.yaml" command="load" />
 
     <!-- Load costmap configuration files -->
     <rosparam file="$(find pr2_3dnav)/configs/move_base_params.yaml" command="load" />
