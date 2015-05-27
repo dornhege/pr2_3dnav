@@ -33,19 +33,20 @@
  *********************************************************************/
 
 /* Author: Philipp Jankov*/
-/* Author: Ioan Sucan */
 
-#ifndef MOVEIT_VISUALIZATION_ROBOT_PATH_DISPLAY_RVIZ_ROBOT_STATE_DISPLAY_
-#define MOVEIT_VISUALIZATION_ROBOT_PATH_DISPLAY_RVIZ_ROBOT_STATE_DISPLAY_
+#ifndef PR2_3DNAV_VISUALIZATION_SLICE_DISPLAY_RVIZ_SLICE_DISPLAY_
+#define PR2_3DNAV_VISUALIZATION_SLICE_DISPLAY_RVIZ_SLICE_DISPLAY_
 
 #include <rviz/display.h>
 
 #ifndef Q_MOC_RUN
 #include <moveit/rdf_loader/rdf_loader.h>
+#include <moveit/planning_scene_monitor/planning_scene_monitor.h>
 #include <moveit/rviz_plugin_render_tools/robot_state_visualization.h>
 #include <moveit_msgs/DisplayRobotState.h>
+#include <interactive_markers/interactive_marker_server.h>
+#include <interactive_markers/menu_handler.h>
 #include <ros/ros.h>
-#include <nav_msgs/Path.h>
 #endif
 
 namespace Ogre
@@ -63,21 +64,9 @@ class RosTopicProperty;
 class ColorProperty;
 }
 
-namespace moveit_rviz_plugin
+namespace pr2_3dnav_rviz_plugin
 {
 
-class RobotCnt {
-public:
-  RobotCnt(robot_state::RobotStatePtr state, RobotStateVisualizationPtr robot);
-  ~RobotCnt() {}
-  
-  robot_state::RobotStatePtr state_;
-  RobotStateVisualizationPtr robot_;
-};
-
-typedef boost::shared_ptr< ::moveit_rviz_plugin::RobotCnt > RobotCntPtr;
-typedef boost::shared_ptr< ::moveit_rviz_plugin::RobotCnt const > RobotCntConstPtr;
-  
 class RobotPathVisualization;
 
 class RobotPathDisplay : public rviz::Display
@@ -98,11 +87,10 @@ private Q_SLOTS:
   // Slot Event Functions
   // ******************************************************************************************
   void changedRobotDescription();
-  void changedRobotPathTopic();
-  void redrawPath();
+  void changedRobotAlpha();
 
 protected:
-  
+
   void loadRobotModel();
 
   /**
@@ -110,7 +98,7 @@ protected:
    */
   void calculateOffsetPosition();
 
-  void newRobotPathCallback(nav_msgs::PathConstPtr path);
+  void newCallback();
 
   // overrides from Display
   virtual void onInitialize();
@@ -120,22 +108,28 @@ protected:
 
   // render the robots
   ros::NodeHandle root_nh_;
-  ros::Subscriber robot_path_subscriber_;
-
   rdf_loader::RDFLoaderPtr rdf_loader_;
-  nav_msgs::PathConstPtr last_known_path_;
-  std::vector<RobotCntConstPtr> robots_;
-  
+
+  planning_scene_monitor::PlanningSceneMonitorPtr kpsm_;
+
   robot_model::RobotModelConstPtr kmodel_;
-  rviz::RosTopicProperty* robot_path_topic_property_;
+  robot_state::RobotStatePtr kstate_;
+  moveit_rviz_plugin::RobotStateVisualizationPtr robot_;
+
   rviz::StringProperty* robot_description_property_;
   rviz::FloatProperty* robot_alpha_property_;
-  rviz::FloatProperty* robot_deltatheta_property_;
-  rviz::FloatProperty* robot_deltadist_property_;
   bool update_state_;
 
+  interactive_markers::MenuHandler menu_handler_;
+  visualization_msgs::InteractiveMarker int_marker_;
+  boost::shared_ptr<interactive_markers::InteractiveMarkerServer> server_;
+
+  void makeChessPieceMarker(const tf::Vector3& position);
+  void processFeedback(const visualization_msgs::InteractiveMarkerFeedbackConstPtr &feedback);
+  void alignMarker(const visualization_msgs::InteractiveMarkerFeedbackConstPtr &feedback);
+  visualization_msgs::Marker makeBox(visualization_msgs::InteractiveMarker &msg);
 };
 
-} // namespace moveit_rviz_plugin
+} // namespace pr2_3dnav_rviz_plugin
 
 #endif

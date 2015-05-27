@@ -32,9 +32,9 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  *********************************************************************/
 
-/* Author: Ioan Sucan */
+/* Author: Philipp Jankov */
 
 #include <class_loader/class_loader.h>
-#include <moveit/robot_path_rviz_plugin/robot_path_display.h>
+#include <pr2_3dnav_slice_rviz_plugin/pr2_3dnav_slice_display.h>
 
-CLASS_LOADER_REGISTER_CLASS( moveit_rviz_plugin::RobotPathDisplay, rviz::Display )
+CLASS_LOADER_REGISTER_CLASS( pr2_3dnav_rviz_plugin::RobotPathDisplay, rviz::Display )
