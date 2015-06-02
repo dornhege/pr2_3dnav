@@ -1,7 +1,9 @@
 /*********************************************************************
  * Software License Agreement (BSD License)
  *
- *  Copyright (c) 2008, Willow Garage, Inc.
+ *  Copyright (c) 2012, Willow Garage, Inc.
+ *  Copyright (c) 2013, Ioan A. Sucan
+ *  Copyright (c) 2015, Philipp Jankov
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -32,11 +34,14 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  *********************************************************************/
 
-/* Author: Philipp Jankov*/
+/* Author: Ioan Sucan */
+/* Author: Philipp Jankov */
 
 #include <pr2_3dnav_slice_rviz_plugin/pr2_3dnav_slice_display.h>
 #include <moveit/robot_interaction/interactive_marker_helpers.h>
 #include <moveit/robot_state/conversions.h>
+#include <moveit/rviz_plugin_render_tools/robot_state_visualization.h>
+#include <moveit/rviz_plugin_render_tools/octomap_render.h>
 
 #include <rviz/visualization_manager.h>
 #include <rviz/robot/robot.h>
@@ -48,177 +53,620 @@
 #include <rviz/properties/float_property.h>
 #include <rviz/properties/ros_topic_property.h>
 #include <rviz/properties/color_property.h>
+#include <rviz/properties/enum_property.h>
 #include <rviz/display_context.h>
 #include <rviz/frame_manager.h>
 #include <tf/transform_listener.h>
-#include <tf/transform_datatypes.h>
-#include <tf/transform_broadcaster.h>
-#include <tf/transform_datatypes.h>
-#include <tf/tf.h>
 #include <eigen_conversions/eigen_msg.h>
 
 #include <OgreSceneManager.h>
 #include <OgreSceneNode.h>
 
-#include <boost/foreach.hpp>
-#define forEach BOOST_FOREACH
-
 namespace pr2_3dnav_rviz_plugin
 {
+  const std::string RobotSliceDisplay::INTERACTIVE_MARKER_TOPIC = "robot_slice_interactive_marker_topic";
   // ******************************************************************************************
   // Base class contructor
   // ******************************************************************************************
-  RobotPathDisplay::RobotPathDisplay() :
+  RobotSliceDisplay::RobotSliceDisplay(bool listen_to_planning_scene, bool show_scene_robot) :
     Display(),
-    update_state_(false)
+    model_is_loading_(false),
+    planning_scene_needs_render_(true),
+    current_scene_time_(0.0f)
   {
+    move_group_ns_property_ =
+      new rviz::StringProperty( "Move Group Namespace", "", "The name of the ROS namespace in which the move_group node is running",
+                                this,
+                                SLOT( changedMoveGroupNS() ), this );
     robot_description_property_ =
-      new rviz::StringProperty( "Robot Description", "robot_description", "The name of the ROS parameter where the URDF for the robot is loaded", this,
+      new rviz::StringProperty( "Robot Description", "robot_description", "The name of the ROS parameter where the URDF for the robot is loaded",
+                                this,
                                 SLOT( changedRobotDescription() ), this );
 
+    if (listen_to_planning_scene)
+      planning_scene_topic_property_ =
+        new rviz::RosTopicProperty( "Planning Scene Topic", "planning_scene",
+                                    ros::message_traits::datatype<moveit_msgs::PlanningScene>(),
+                                    "The topic on which the moveit_msgs::PlanningScene messages are received",
+                                    this,
+                                    SLOT( changedPlanningSceneTopic() ), this );
+    else
+      planning_scene_topic_property_ = NULL;
+
     // Planning scene category -------------------------------------------------------------------------------------------
-    robot_alpha_property_ =
-      new rviz::FloatProperty( "Robot Alpha", 0.1, "Specifies the alpha for the marker.", this,
-                              SLOT( changedRobotAlpha() ), this );
-    robot_alpha_property_->setMin( 0.0 );
-    robot_alpha_property_->setMax( 1.0 );
+    scene_category_ = new rviz::Property( "Scene Geometry", QVariant(), "", this );
+
+    scene_name_property_ =
+      new rviz::StringProperty( "Scene Name", "(noname)", "Shows the name of the planning scene",
+                                scene_category_,
+                                SLOT( changedSceneName() ), this );
+    scene_name_property_->setShouldBeSaved(false);
+    scene_enabled_property_ =
+      new rviz::BoolProperty( "Show Scene Geometry", true, "Indicates whether planning scenes should be displayed",
+                              scene_category_,
+                              SLOT( changedSceneEnabled() ), this );
+
+    scene_alpha_property_ =
+      new rviz::FloatProperty( "Scene Alpha", 0.9f, "Specifies the alpha for the scene geometry",
+                              scene_category_,
+                              SLOT( changedSceneAlpha() ), this );
+    scene_alpha_property_->setMin( 0.0 );
+    scene_alpha_property_->setMax( 1.0 );
+
+    scene_color_property_ = new rviz::ColorProperty( "Scene Color", QColor(50, 230, 50), "The color for the planning scene obstacles (if a color is not defined)",
+                                                    scene_category_,
+                                                    SLOT( changedSceneColor() ), this );
+
+    octree_render_property_ = new rviz::EnumProperty( "Voxel Rendering", "Occupied Voxels",
+                                                "Select voxel type.",
+                                                scene_category_, SLOT( changedOctreeRenderMode() ), this );
+
+    octree_render_property_->addOption( "Occupied Voxels",  moveit_rviz_plugin::OCTOMAP_OCCUPIED_VOXELS );
+    octree_render_property_->addOption( "Free Voxels",  moveit_rviz_plugin::OCTOMAP_FREE_VOXELS );
+    octree_render_property_->addOption( "All Voxels",  moveit_rviz_plugin::OCTOMAP_FREE_VOXELS | moveit_rviz_plugin::OCTOMAP_OCCUPIED_VOXELS);
+
+    octree_coloring_property_ = new rviz::EnumProperty( "Voxel Coloring", "Z-Axis",
+                                                  "Select voxel coloring mode",
+                                                  scene_category_, SLOT( changedOctreeColorMode() ), this );
+
+    octree_coloring_property_->addOption( "Z-Axis",  moveit_rviz_plugin::OCTOMAP_Z_AXIS_COLOR );
+    octree_coloring_property_->addOption( "Cell Probability",  moveit_rviz_plugin::OCTOMAP_PROBABLILTY_COLOR );
+
+    scene_display_time_property_ =
+      new rviz::FloatProperty( "Scene Display Time", 0.2f, "The amount of wall-time to wait in between rendering updates to the planning scene (if any)",
+                              scene_category_,
+                              SLOT( changedSceneDisplayTime() ), this );
+    scene_display_time_property_->setMin(0.0001);
+
+    if (show_scene_robot)
+    {
+      robot_category_  = new rviz::Property( "Scene Robot",   QVariant(), "", this );
+
+      scene_robot_visual_enabled_property_ =
+        new rviz::BoolProperty( "Show Robot Visual", true, "Indicates whether the robot state specified by the planning scene should be displayed as defined for visualisation purposes.",
+                                robot_category_,
+                                SLOT( changedSceneRobotVisualEnabled() ), this );
+
+      scene_robot_collision_enabled_property_ =
+        new rviz::BoolProperty("Show Robot Collision", false, "Indicates whether the robot state specified by the planning scene should be displayed as defined for collision detection purposes.",
+                              robot_category_,
+                              SLOT(changedSceneRobotCollisionEnabled()), this);
+
+      robot_alpha_property_ =
+        new rviz::FloatProperty( "Robot Alpha", 0.5f, "Specifies the alpha for the robot links",
+                                robot_category_,
+                                SLOT( changedRobotSceneAlpha() ), this );
+      robot_alpha_property_->setMin( 0.0 );
+      robot_alpha_property_->setMax( 1.0 );
+
+      attached_body_color_property_ = new rviz::ColorProperty( "Attached Body Color", QColor(150, 50, 150), "The color for the attached bodies",
+                                                              robot_category_,
+                                                              SLOT( changedAttachedBodyColor() ), this );
+    }
+    else
+    {
+      robot_category_ = NULL;
+      scene_robot_visual_enabled_property_ = NULL;
+      scene_robot_collision_enabled_property_ = NULL;
+      robot_alpha_property_ = NULL;
+      attached_body_color_property_ = NULL;
+    }
   }
 
   // ******************************************************************************************
   // Deconstructor
   // ******************************************************************************************
-  RobotPathDisplay::~RobotPathDisplay()
+  RobotSliceDisplay::~RobotSliceDisplay()
   {
+    clearJobs();
+
+    planning_scene_render_.reset();
+    if (context_ && context_->getSceneManager() && planning_scene_node_)
+      context_->getSceneManager()->destroySceneNode(planning_scene_node_->getName());
+    if (planning_scene_robot_)
+      planning_scene_robot_.reset();
+    planning_scene_monitor_.reset();
   }
 
-  void RobotPathDisplay::onInitialize()
+  void RobotSliceDisplay::clearJobs()
+  {
+    background_process_.clear();
+    {
+      boost::unique_lock<boost::mutex> ulock(main_loop_jobs_lock_);
+      main_loop_jobs_.clear();
+    }
+  }
+
+  void RobotSliceDisplay::onInitialize()
   {
     Display::onInitialize();
-    robot_.reset(new moveit_rviz_plugin::RobotStateVisualization(scene_node_, context_, "Robot Slice", this));
-    robot_->setVisible(false);
-    
+
+    // the scene node that contains everything
+    planning_scene_node_ = scene_node_->createChildSceneNode();
+
+    if (robot_category_)
+    {
+      planning_scene_robot_.reset(new moveit_rviz_plugin::RobotStateVisualization(planning_scene_node_, context_, "Slice Scene", robot_category_));
+      planning_scene_robot_->setVisible(true);
+      planning_scene_robot_->setVisualVisible(scene_robot_visual_enabled_property_->getBool());
+      planning_scene_robot_->setCollisionVisible(scene_robot_collision_enabled_property_->getBool());
+    }
   }
 
-  void RobotPathDisplay::reset()
+  void RobotSliceDisplay::reset()
   {
-    robot_->clear();
-    rdf_loader_.reset();
-    kpsm_.reset(new planning_scene_monitor::PlanningSceneMonitor(robot_description_property_->getStdString()));
-    loadRobotModel();
+    planning_scene_render_.reset();
+    if (planning_scene_robot_)
+      planning_scene_robot_->clear();
+
+    addBackgroundJob(boost::bind(&RobotSliceDisplay::loadRobotModel, this), "loadRobotModel");
     Display::reset();
-    robot_->setVisible(true);
+
+    if (planning_scene_robot_)
+    {
+      planning_scene_robot_->setVisible(true);
+      planning_scene_robot_->setVisualVisible(scene_robot_visual_enabled_property_->getBool());
+      planning_scene_robot_->setCollisionVisible(scene_robot_collision_enabled_property_->getBool());
+    }
   }
 
-  void RobotPathDisplay::newCallback()
+  void RobotSliceDisplay::addBackgroundJob(const boost::function<void()> &job, const std::string &name)
   {
-    if(!kmodel_)
-        return;
-
-    if(!kpsm_ || !kpsm_->requestPlanningSceneState()) return;
-    planning_scene_monitor::LockedPlanningSceneRO psm(kpsm_);
-    robot_state::RobotState current_state = psm->getCurrentState();
-
-    update_state_ = true;
+    background_process_.addJob(job, name);
   }
 
-  void RobotPathDisplay::changedRobotDescription()
+  void RobotSliceDisplay::addMainLoopJob(const boost::function<void()> &job)
+  {
+    boost::unique_lock<boost::mutex> ulock(main_loop_jobs_lock_);
+    main_loop_jobs_.push_back(job);
+  }
+
+  void RobotSliceDisplay::waitForAllMainLoopJobs()
+  {
+    boost::unique_lock<boost::mutex> ulock(main_loop_jobs_lock_);
+    while (!main_loop_jobs_.empty())
+      main_loop_jobs_empty_condition_.wait(ulock);
+  }
+
+  void RobotSliceDisplay::executeMainLoopJobs()
+  {
+    main_loop_jobs_lock_.lock();
+    while (!main_loop_jobs_.empty())
+    {
+      boost::function<void()> fn = main_loop_jobs_.front();
+      main_loop_jobs_.pop_front();
+      main_loop_jobs_lock_.unlock();
+      try
+      {
+        fn();
+      }
+      catch(std::runtime_error &ex)
+      {
+        ROS_ERROR("Exception caught executing main loop job: %s", ex.what());
+      }
+      catch(...)
+      {
+        ROS_ERROR("Exception caught executing main loop job");
+      }
+      main_loop_jobs_lock_.lock();
+    }
+    main_loop_jobs_empty_condition_.notify_all();
+    main_loop_jobs_lock_.unlock();
+  }
+
+  const planning_scene_monitor::PlanningSceneMonitorPtr& RobotSliceDisplay::getPlanningSceneMonitor()
+  {
+    return planning_scene_monitor_;
+  }
+
+  const std::string RobotSliceDisplay::getMoveGroupNS() const
+  {
+    return move_group_ns_property_->getStdString();
+  }
+
+  const robot_model::RobotModelConstPtr& RobotSliceDisplay::getRobotModel() const
+  {
+    if (planning_scene_monitor_)
+      return planning_scene_monitor_->getRobotModel();
+    else
+    {
+      static robot_model::RobotModelConstPtr empty;
+      return empty;
+    }
+  }
+
+  planning_scene_monitor::LockedPlanningSceneRO RobotSliceDisplay::getPlanningSceneRO() const
+  {
+    return planning_scene_monitor::LockedPlanningSceneRO(planning_scene_monitor_);
+  }
+
+  planning_scene_monitor::LockedPlanningSceneRW RobotSliceDisplay::getPlanningSceneRW()
+  {
+    return planning_scene_monitor::LockedPlanningSceneRW(planning_scene_monitor_);
+  }
+
+  void RobotSliceDisplay::changedAttachedBodyColor()
+  {
+    queueRenderSceneGeometry();
+  }
+
+  void RobotSliceDisplay::changedSceneColor()
+  {
+    queueRenderSceneGeometry();
+  }
+
+  void RobotSliceDisplay::changedMoveGroupNS()
   {
     if (isEnabled())
       reset();
   }
 
-  void RobotPathDisplay::changedRobotAlpha()
+  void RobotSliceDisplay::changedRobotDescription()
   {
-    if (robot_)
+    if (isEnabled())
+      reset();
+  }
+
+  void RobotSliceDisplay::changedSceneName()
+  {
+    planning_scene_monitor::LockedPlanningSceneRW ps = getPlanningSceneRW();
+    if (ps)
+      ps->setName(scene_name_property_->getStdString());
+  }
+
+  void RobotSliceDisplay::renderPlanningScene()
+  {
+    if (planning_scene_render_ && planning_scene_needs_render_)
     {
-      robot_->setAlpha(robot_alpha_property_->getFloat());
-      update_state_ = true;
+      QColor color = scene_color_property_->getColor();
+      rviz::Color env_color(color.redF(), color.greenF(), color.blueF());
+      if (attached_body_color_property_)
+        color = attached_body_color_property_->getColor();
+      rviz::Color attached_color(color.redF(), color.greenF(), color.blueF());
+
+      try
+      {
+        const planning_scene_monitor::LockedPlanningSceneRO &ps = getPlanningSceneRO();
+        planning_scene_render_->renderPlanningScene(ps, env_color,
+                                                    attached_color,
+                                                    static_cast<moveit_rviz_plugin::OctreeVoxelRenderMode>(octree_render_property_->getOptionInt()),
+                                                    static_cast<moveit_rviz_plugin::OctreeVoxelColorMode>(octree_coloring_property_->getOptionInt()),
+                                                    scene_alpha_property_->getFloat());
+      }
+      catch(...)
+      {
+        ROS_ERROR("Exception thrown while rendering planning scene");
+      }
+      planning_scene_needs_render_ = false;
+      planning_scene_render_->getGeometryNode()->setVisible(scene_enabled_property_->getBool());
     }
+  }
+
+  void RobotSliceDisplay::changedSceneAlpha()
+  {
+    queueRenderSceneGeometry();
+  }
+
+  void RobotSliceDisplay::changedRobotSceneAlpha()
+  {
+    if (planning_scene_robot_)
+    {
+      planning_scene_robot_->setAlpha(robot_alpha_property_->getFloat());
+      queueRenderSceneGeometry();
+    }
+  }
+
+  void RobotSliceDisplay::changedPlanningSceneTopic()
+  {
+    if (planning_scene_monitor_ && planning_scene_topic_property_)
+    {
+      planning_scene_monitor_->startSceneMonitor(planning_scene_topic_property_->getStdString());
+      planning_scene_monitor_->requestPlanningSceneState(
+          ros::names::append(getMoveGroupNS(),planning_scene_monitor::PlanningSceneMonitor::DEFAULT_PLANNING_SCENE_SERVICE));
+      loadInteractiveMarker();
+    }
+  }
+
+  void RobotSliceDisplay::changedSceneDisplayTime()
+  {
+  }
+
+  void RobotSliceDisplay::changedOctreeRenderMode()
+  {
+  }
+
+  void RobotSliceDisplay::changedOctreeColorMode()
+  {
+  }
+
+  void RobotSliceDisplay::changedSceneRobotVisualEnabled()
+  {
+    if (isEnabled() && planning_scene_robot_)
+    {
+      planning_scene_robot_->setVisible(true);
+      planning_scene_robot_->setVisualVisible(scene_robot_visual_enabled_property_->getBool());
+    }
+  }
+
+  void RobotSliceDisplay::changedSceneRobotCollisionEnabled()
+  {
+    if (isEnabled() && planning_scene_robot_)
+    {
+      planning_scene_robot_->setVisible(true);
+      planning_scene_robot_->setCollisionVisible(scene_robot_collision_enabled_property_->getBool());
+    }
+  }
+
+  void RobotSliceDisplay::changedSceneEnabled()
+  {
+    if (planning_scene_render_)
+      planning_scene_render_->getGeometryNode()->setVisible(scene_enabled_property_->getBool());
+  }
+
+  void RobotSliceDisplay::setGroupColor(rviz::Robot* robot, const std::string& group_name, const QColor &color)
+  {
+    if (getRobotModel())
+    {
+      const robot_model::JointModelGroup *jmg = getRobotModel()->getJointModelGroup(group_name);
+      if (jmg)
+      {
+        const std::vector<std::string> &links = jmg->getLinkModelNamesWithCollisionGeometry();
+        for (std::size_t i = 0 ; i < links.size() ; ++i)
+          setLinkColor(robot, links[i], color);
+      }
+    }
+  }
+
+  void RobotSliceDisplay::unsetAllColors(rviz::Robot* robot)
+  {
+    if (getRobotModel())
+    {
+      const std::vector<std::string> &links = getRobotModel()->getLinkModelNamesWithCollisionGeometry();
+      for (std::size_t i = 0 ; i < links.size() ; ++i)
+        unsetLinkColor(robot, links[i]);
+    }
+  }
+
+  void RobotSliceDisplay::unsetGroupColor(rviz::Robot* robot, const std::string& group_name )
+  {
+    if (getRobotModel())
+    {
+      const robot_model::JointModelGroup *jmg = getRobotModel()->getJointModelGroup(group_name);
+      if (jmg)
+      {
+        const std::vector<std::string> &links = jmg->getLinkModelNamesWithCollisionGeometry();
+        for (std::size_t i = 0 ; i < links.size() ; ++i)
+          unsetLinkColor(robot, links[i]);
+      }
+    }
+  }
+
+  void RobotSliceDisplay::setLinkColor(const std::string& link_name, const QColor &color)
+  {
+    if (planning_scene_robot_)
+      setLinkColor(&planning_scene_robot_->getRobot(), link_name, color );
+  }
+
+  void RobotSliceDisplay::unsetLinkColor(const std::string& link_name)
+  {
+    if (planning_scene_robot_)
+      unsetLinkColor(&planning_scene_robot_->getRobot(), link_name);
+  }
+
+  void RobotSliceDisplay::setLinkColor(rviz::Robot* robot, const std::string& link_name, const QColor &color )
+  {
+    rviz::RobotLink *link = robot->getLink(link_name);
+
+    // Check if link exists
+    if (link)
+      link->setColor( color.redF(), color.greenF(), color.blueF() );
+  }
+
+  void RobotSliceDisplay::unsetLinkColor(rviz::Robot* robot, const std::string& link_name )
+  {
+    rviz::RobotLink *link = robot->getLink(link_name);
+
+    // Check if link exists
+    if (link)
+      link->unsetColor();
   }
 
   // ******************************************************************************************
   // Load
   // ******************************************************************************************
-  void RobotPathDisplay::loadRobotModel()
+  planning_scene_monitor::PlanningSceneMonitorPtr RobotSliceDisplay::createPlanningSceneMonitor()
   {
-    if (!rdf_loader_)
-      rdf_loader_.reset(new rdf_loader::RDFLoader(robot_description_property_->getStdString()));
-
-    if (rdf_loader_->getURDF())
-    {
-      const boost::shared_ptr<srdf::Model> &srdf = rdf_loader_->getSRDF() ? rdf_loader_->getSRDF() : boost::shared_ptr<srdf::Model>(new srdf::Model());
-      kmodel_.reset(new robot_model::RobotModel(rdf_loader_->getURDF(), srdf));
-      robot_->load(*kmodel_->getURDF());
-      robot_->setAlpha(robot_alpha_property_->getFloat());
-      if(kpsm_ && kpsm_->requestPlanningSceneState()){
-        planning_scene_monitor::LockedPlanningSceneRO psm(kpsm_);
-        robot_state::RobotState current_state = psm->getCurrentState();
-        kstate_.reset(new robot_state::RobotState(current_state));
-      } else {
-        kstate_.reset(new robot_state::RobotState(kmodel_));
-        kstate_->setToDefaultValues();
-      }
-
-      update_state_ = true;
-      setStatus( rviz::StatusProperty::Ok, "RobotModel", "Model Loaded Successfully" );
-    }
-    else
-      setStatus( rviz::StatusProperty::Error, "RobotModel", "No  Model Loaded" );
+    return planning_scene_monitor::PlanningSceneMonitorPtr
+      (new planning_scene_monitor::PlanningSceneMonitor(robot_description_property_->getStdString(),
+                                                        context_->getFrameManager()->getTFClientPtr(),
+                                                        getNameStd() + "_planning_scene_monitor"));
   }
 
-  void RobotPathDisplay::onEnable()
+  void RobotSliceDisplay::clearRobotModel()
+  {
+    planning_scene_render_.reset();
+    planning_scene_monitor_.reset(); // this so that the destructor of the PlanningSceneMonitor gets called before a new instance of a scene monitor is constructed
+  }
+
+  void RobotSliceDisplay::loadRobotModel()
+  {
+    // wait for other robot loadRobotModel() calls to complete;
+    boost::mutex::scoped_lock _(robot_model_loading_lock_);
+    model_is_loading_ = true;
+
+    // we need to make sure the clearing of the robot model is in the main thread,
+    // so that rendering operations do not have data removed from underneath,
+    // so the next function is executed in the main loop
+    addMainLoopJob(boost::bind(&RobotSliceDisplay::clearRobotModel, this));
+
+    waitForAllMainLoopJobs();
+
+    planning_scene_monitor::PlanningSceneMonitorPtr psm = createPlanningSceneMonitor();
+    if (psm->getPlanningScene())
+    {
+      planning_scene_monitor_.swap(psm);
+      addMainLoopJob(boost::bind(&RobotSliceDisplay::onRobotModelLoaded, this));
+      setStatus(rviz::StatusProperty::Ok, "PlanningScene", "Planning Scene Loaded Successfully");
+      waitForAllMainLoopJobs();
+    }
+    else
+    {
+      setStatus(rviz::StatusProperty::Error, "PlanningScene", "No Planning Scene Loaded");
+    }
+
+    if (planning_scene_monitor_)
+      planning_scene_monitor_->addUpdateCallback(boost::bind(&RobotSliceDisplay::sceneMonitorReceivedUpdate, this, _1));
+
+    model_is_loading_ = false;
+  }
+
+  void RobotSliceDisplay::onRobotModelLoaded()
+  {
+    changedPlanningSceneTopic();
+    planning_scene_render_.reset(new moveit_rviz_plugin::PlanningSceneRender(planning_scene_node_, context_, planning_scene_robot_));
+    planning_scene_render_->getGeometryNode()->setVisible(scene_enabled_property_->getBool());
+
+    const planning_scene_monitor::LockedPlanningSceneRO &ps = getPlanningSceneRO();
+    if (planning_scene_robot_)
+    {
+      planning_scene_robot_->load(*getRobotModel()->getURDF());
+      robot_state::RobotState *rs = new robot_state::RobotState(ps->getCurrentState());
+      rs->update();
+      planning_scene_robot_->update(robot_state::RobotStateConstPtr(rs));
+    }
+    loadInteractiveMarker();
+
+    bool oldState = scene_name_property_->blockSignals(true);
+    scene_name_property_->setStdString(ps->getName());
+    scene_name_property_->blockSignals(oldState);
+  }
+
+  void RobotSliceDisplay::sceneMonitorReceivedUpdate(planning_scene_monitor::PlanningSceneMonitor::SceneUpdateType update_type)
+  {
+    onSceneMonitorReceivedUpdate(update_type);
+  }
+
+  void RobotSliceDisplay::onSceneMonitorReceivedUpdate(planning_scene_monitor::PlanningSceneMonitor::SceneUpdateType update_type)
+  {
+    bool oldState = scene_name_property_->blockSignals(true);
+    getPlanningSceneRW()->getCurrentStateNonConst().update();
+    scene_name_property_->setStdString(getPlanningSceneRO()->getName());
+    scene_name_property_->blockSignals(oldState);
+
+    planning_scene_needs_render_ = true;
+  }
+
+  void RobotSliceDisplay::onEnable()
   {
     Display::onEnable();
-    kpsm_.reset(new planning_scene_monitor::PlanningSceneMonitor(robot_description_property_->getStdString()));
-    loadRobotModel();
-    if (robot_)
-      robot_->setVisible(true);
-    calculateOffsetPosition();
 
-    server_.reset( new interactive_markers::InteractiveMarkerServer("basic_controls","",false));
-    menu_handler_.insert("First Entry", boost::bind(&RobotPathDisplay::processFeedback, this, _1));
-    tf::Vector3 position = tf::Vector3(0, 0, 0);
-    makeChessPieceMarker(position);
-    server_->applyChanges();
+    addBackgroundJob(boost::bind(&RobotSliceDisplay::loadRobotModel, this), "loadRobotModel");
+
+    if (planning_scene_robot_)
+    {
+      planning_scene_robot_->setVisible(true);
+      planning_scene_robot_->setVisualVisible(scene_robot_visual_enabled_property_->getBool());
+      planning_scene_robot_->setCollisionVisible(scene_robot_collision_enabled_property_->getBool());
+    }
+    if (planning_scene_render_)
+      planning_scene_render_->getGeometryNode()->setVisible(scene_enabled_property_->getBool());
+
+    calculateOffsetPosition();
   }
 
   // ******************************************************************************************
   // Disable
   // ******************************************************************************************
-  void RobotPathDisplay::onDisable()
+  void RobotSliceDisplay::onDisable()
   {
-    if (robot_)
-      robot_->setVisible(false);
+    if (planning_scene_monitor_)
+    {
+      planning_scene_monitor_->stopSceneMonitor();
+      if (planning_scene_render_)
+        planning_scene_render_->getGeometryNode()->setVisible(false);
+    }
+    if (planning_scene_robot_)
+      planning_scene_robot_->setVisible(false);
+
+    server_.reset( new interactive_markers::InteractiveMarkerServer(INTERACTIVE_MARKER_TOPIC));
+    server_->applyChanges();
+
     Display::onDisable();
   }
 
-  void RobotPathDisplay::update(float wall_dt, float ros_dt)
+  void RobotSliceDisplay::queueRenderSceneGeometry()
+  {
+    planning_scene_needs_render_ = true;
+  }
+
+  void RobotSliceDisplay::update(float wall_dt, float ros_dt)
   {
     Display::update(wall_dt, ros_dt);
-    if (robot_ && update_state_)
+
+    executeMainLoopJobs();
+
+    if (planning_scene_monitor_)
+      updateInternal(wall_dt, ros_dt);
+  }
+
+  void RobotSliceDisplay::updateInternal(float wall_dt, float ros_dt)
+  {
+    current_scene_time_ += wall_dt;
+    if (current_scene_time_ > scene_display_time_property_->getFloat())
     {
-      update_state_ = false;
-      kstate_->update();
-      robot_->update(kstate_);
+      renderPlanningScene();
+      current_scene_time_ = 0.0f;
     }
+  }
+
+  void RobotSliceDisplay::load( const rviz::Config& config )
+  {
+    Display::load(config);
+  }
+
+  void RobotSliceDisplay::save( rviz::Config config ) const
+  {
+    Display::save(config);
   }
 
   // ******************************************************************************************
   // Calculate Offset Position
   // ******************************************************************************************
-  void RobotPathDisplay::calculateOffsetPosition()
+  void RobotSliceDisplay::calculateOffsetPosition()
   {
-    if (!kmodel_)
+    if (!getRobotModel())
       return;
 
-    ros::Time stamp;
-    std::string err_string;
-    if (context_->getTFClient()->getLatestCommonTime(fixed_frame_.toStdString(), kmodel_->getModelFrame(), stamp, &err_string) != tf::NO_ERROR)
-      return;
+    tf::Stamped<tf::Pose> pose(tf::Pose::getIdentity(), ros::Time(0), getRobotModel()->getModelFrame());
+    static const unsigned int max_attempts = 10;
+    unsigned int attempts = 0;
+    while (!context_->getTFClient()->canTransform(fixed_frame_.toStdString(), getRobotModel()->getModelFrame(), ros::Time(0)) && attempts < max_attempts)
+    {
+      ros::Duration(0.1).sleep();
+      attempts++;
+    }
 
-    tf::Stamped<tf::Pose> pose(tf::Pose::getIdentity(), stamp, kmodel_->getModelFrame());
-
-    if (context_->getTFClient()->canTransform(fixed_frame_.toStdString(), kmodel_->getModelFrame(), stamp))
+    if (attempts < max_attempts)
     {
       try
       {
@@ -233,12 +681,41 @@ namespace pr2_3dnav_rviz_plugin
     Ogre::Vector3 position(pose.getOrigin().x(), pose.getOrigin().y(), pose.getOrigin().z());
     const tf::Quaternion &q = pose.getRotation();
     Ogre::Quaternion orientation( q.getW(), q.getX(), q.getY(), q.getZ() );
-    scene_node_->setPosition(position);
-    scene_node_->setOrientation(orientation);
+    planning_scene_node_->setPosition(position);
+    planning_scene_node_->setOrientation(orientation);
+    loadInteractiveMarker();
+  }
 
+  void RobotSliceDisplay::loadInteractiveMarker()
+  {
+    if (!getRobotModel())
+      return;
+
+    tf::Stamped<tf::Pose> pose(tf::Pose::getIdentity(), ros::Time(0), getRobotModel()->getModelFrame());
+    static const unsigned int max_attempts = 10;
+    unsigned int attempts = 0;
+    while (!context_->getTFClient()->canTransform(fixed_frame_.toStdString(), getRobotModel()->getModelFrame(), ros::Time(0)) && attempts < max_attempts)
+    {
+      ros::Duration(0.1).sleep();
+      attempts++;
+    }
+
+    if (attempts < max_attempts)
+    {
+      try
+      {
+        context_->getTFClient()->transformPose(fixed_frame_.toStdString(), pose, pose);
+      }
+      catch (tf::TransformException& e)
+      {
+        ROS_ERROR( "Error transforming from frame '%s' to frame '%s'", pose.frame_id_.c_str(), fixed_frame_.toStdString().c_str() );
+      }
+    }
     geometry_msgs::PoseStamped poseStamped;
-    poseStamped.header.stamp = stamp;
-    poseStamped.header.frame_id = kmodel_->getModelFrame();
+
+    poseStamped.header.stamp = ros::Time(0);
+    poseStamped.header.frame_id = getRobotModel()->getModelFrame();
+    const tf::Quaternion &q = pose.getRotation();
 
     poseStamped.pose.position.x = pose.getOrigin().x();
     poseStamped.pose.position.y = pose.getOrigin().y();
@@ -248,144 +725,36 @@ namespace pr2_3dnav_rviz_plugin
     poseStamped.pose.orientation.y = q.getY();
     poseStamped.pose.orientation.z = q.getZ();
 
-//     // we want to use our special callback function
-//     server_.reset( new interactive_markers::InteractiveMarkerServer("basic_controls","",false) );    
-//     int_marker_ = robot_interaction::makePlanarXYMarker("islice_marker", poseStamped, 1.0, false);
-//     server_->insert(int_marker_);
-//     server_->setCallback(int_marker_.name, boost::bind(&RobotPathDisplay::processFeedback, this, _1));
-// 
-//     // set different callback for POSE_UPDATE feedback
-//     server_->setCallback(int_marker_.name, boost::bind(&RobotPathDisplay::alignMarker, this, _1), visualization_msgs::InteractiveMarkerFeedback::POSE_UPDATE );
-//     menu_handler_.apply(*server_, int_marker_.name);
-//     server_->applyChanges();
+    int_marker_ = robot_interaction::makePlanarXYMarker("interactive_slice_marker", poseStamped, 1.0, false);
+    server_.reset( new interactive_markers::InteractiveMarkerServer(INTERACTIVE_MARKER_TOPIC));
+    server_->insert(int_marker_);
+    server_->setCallback(int_marker_.name, boost::bind(&RobotSliceDisplay::processFeedback, this, _1));
+    server_->applyChanges();
   }
 
-  void RobotPathDisplay::fixedFrameChanged()
+  void RobotSliceDisplay::fixedFrameChanged()
   {
     Display::fixedFrameChanged();
     calculateOffsetPosition();
   }
 
   // ******************************************************************************************
-  // Interactive Marker Feedback
+  // Interactive Marker ProcessFeedback
   // ******************************************************************************************
-  void RobotPathDisplay::makeChessPieceMarker(const tf::Vector3& position)
-  {
-    int_marker_.header.frame_id = "base_link";
-    tf::pointTFToMsg(position, int_marker_.pose.position);
-    int_marker_.scale = 1;
-
-    int_marker_.name = "chess_piece";
-    int_marker_.description = "Chess Piece\n(2D Move + Alignment)";
-
-    visualization_msgs::InteractiveMarkerControl control;
-
-    control.orientation.w = 1;
-    control.orientation.x = 0;
-    control.orientation.y = 1;
-    control.orientation.z = 0;
-    control.interaction_mode = visualization_msgs::InteractiveMarkerControl::MOVE_PLANE;
-    int_marker_.controls.push_back(control);
-
-    // make a box which also moves in the plane
-    control.markers.push_back(makeBox(int_marker_));
-    control.always_visible = true;
-    int_marker_.controls.push_back(control);
-
-    // we want to use our special callback function
-    server_->insert(int_marker_);
-    server_->setCallback(int_marker_.name, boost::bind(&RobotPathDisplay::processFeedback, this, _1));
-
-    // set different callback for POSE_UPDATE feedback
-    server_->setCallback(int_marker_.name, boost::bind(&RobotPathDisplay::alignMarker, this, _1), visualization_msgs::InteractiveMarkerFeedback::POSE_UPDATE);
-  }
-
-  void RobotPathDisplay::processFeedback(const visualization_msgs::InteractiveMarkerFeedbackConstPtr &feedback)
-  {
-    std::ostringstream s;
-    s << "Feedback from marker '" << feedback->marker_name << "' "
-        << " / control '" << feedback->control_name << "'";
-
-    std::ostringstream mouse_point_ss;
-    if( feedback->mouse_point_valid )
-    {
-      mouse_point_ss << " at " << feedback->mouse_point.x
-                    << ", " << feedback->mouse_point.y
-                    << ", " << feedback->mouse_point.z
-                    << " in frame " << feedback->header.frame_id;
-    }
-
-    switch ( feedback->event_type )
-    {
-      case visualization_msgs::InteractiveMarkerFeedback::MENU_SELECT:
-        ROS_INFO_STREAM( s.str() << ": menu item " << feedback->menu_entry_id << " clicked" << mouse_point_ss.str() << "." );
-        break;
-
-      case visualization_msgs::InteractiveMarkerFeedback::POSE_UPDATE:
-        ROS_INFO_STREAM( s.str() << ": pose changed"
-            << "\nposition = "
-            << feedback->pose.position.x
-            << ", " << feedback->pose.position.y
-            << ", " << feedback->pose.position.z
-            << "\norientation = "
-            << feedback->pose.orientation.w
-            << ", " << feedback->pose.orientation.x
-            << ", " << feedback->pose.orientation.y
-            << ", " << feedback->pose.orientation.z
-            << "\nframe: " << feedback->header.frame_id
-            << " time: " << feedback->header.stamp.sec << "sec, "
-            << feedback->header.stamp.nsec << " nsec" );
-        break;
-
-      case visualization_msgs::InteractiveMarkerFeedback::MOUSE_DOWN:
-        ROS_INFO_STREAM( s.str() << ": mouse down" << mouse_point_ss.str() << "." );
-        break;
-
-      case visualization_msgs::InteractiveMarkerFeedback::MOUSE_UP:
-        ROS_INFO_STREAM( s.str() << ": mouse up" << mouse_point_ss.str() << "." );
-        break;
-    }
-    server_->applyChanges();
-
-    Eigen::Affine3d epose;
-    tf::poseMsgToEigen(feedback->pose, epose);
-    kstate_->setJointPositions(kmodel_->getRootJoint(), epose);
-  }
-
-  void RobotPathDisplay::alignMarker( const visualization_msgs::InteractiveMarkerFeedbackConstPtr &feedback )
+  void RobotSliceDisplay::processFeedback(const visualization_msgs::InteractiveMarkerFeedbackConstPtr &feedback)
   {
     geometry_msgs::Pose pose = feedback->pose;
+    if (!planning_scene_robot_)
+      return;
+    const planning_scene_monitor::LockedPlanningSceneRO &ps = getPlanningSceneRO();
+    robot_state::RobotState *rs = new robot_state::RobotState(ps->getCurrentState());
 
-    pose.position.x = round(pose.position.x-0.5)+0.5;
-    pose.position.y = round(pose.position.y-0.5)+0.5;
-
-    ROS_INFO_STREAM( feedback->marker_name << ":"
-        << " aligning position = "
-        << feedback->pose.position.x
-        << ", " << feedback->pose.position.y
-        << ", " << feedback->pose.position.z
-        << " to "
-        << pose.position.x
-        << ", " << pose.position.y
-        << ", " << pose.position.z );
-
-    server_->setPose( feedback->marker_name, pose );
-    server_->applyChanges();
+    Eigen::Affine3d epose;
+    tf::poseMsgToEigen(pose, epose);
+    rs->setJointPositions(getRobotModel()->getRootJoint(), epose);
+    rs->update();
+    planning_scene_robot_->update(robot_state::RobotStateConstPtr(rs));    
+    server_->setPose(feedback->marker_name, pose);
   }
-
-  visualization_msgs::Marker RobotPathDisplay::makeBox(visualization_msgs::InteractiveMarker &msg)
-  {
-    visualization_msgs::Marker marker;
-
-    marker.type = visualization_msgs::Marker::CUBE;
-    marker.scale.x = msg.scale * 0.45;
-    marker.scale.y = msg.scale * 0.45;
-    marker.scale.z = msg.scale * 0.45;
-    marker.color.r = 0.5;
-    marker.color.g = 0.5;
-    marker.color.b = 0.5;
-    marker.color.a = 1.0;
-
-    return marker;
-  }
-} // namespace pr2_3dnav_rviz_plugin
+}
+// namespace pr2_3dnav_rviz_plugin
