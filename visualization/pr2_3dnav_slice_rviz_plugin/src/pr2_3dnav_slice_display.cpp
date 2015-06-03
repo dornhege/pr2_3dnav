@@ -380,7 +380,7 @@ namespace pr2_3dnav_rviz_plugin
   {
     if (planning_scene_monitor_ && planning_scene_topic_property_)
     {
-      planning_scene_monitor_->startSceneMonitor(planning_scene_topic_property_->getStdString());
+      //planning_scene_monitor_->startSceneMonitor(planning_scene_topic_property_->getStdString());
       planning_scene_monitor_->requestPlanningSceneState(
           ros::names::append(getMoveGroupNS(),planning_scene_monitor::PlanningSceneMonitor::DEFAULT_PLANNING_SCENE_SERVICE));
       loadInteractiveMarker();
@@ -601,7 +601,7 @@ namespace pr2_3dnav_rviz_plugin
   {
     if (planning_scene_monitor_)
     {
-      planning_scene_monitor_->stopSceneMonitor();
+      //planning_scene_monitor_->stopSceneMonitor();
       if (planning_scene_render_)
         planning_scene_render_->getGeometryNode()->setVisible(false);
     }
@@ -746,14 +746,18 @@ namespace pr2_3dnav_rviz_plugin
     geometry_msgs::Pose pose = feedback->pose;
     if (!planning_scene_robot_)
       return;
-    const planning_scene_monitor::LockedPlanningSceneRO &ps = getPlanningSceneRO();
-    robot_state::RobotState *rs = new robot_state::RobotState(ps->getCurrentState());
+    planning_scene_monitor::LockedPlanningSceneRW ps = getPlanningSceneRW();
+    robot_state::RobotState & rs = ps->getCurrentStateNonConst(); // new robot_state::RobotState(ps->getCurrentState());
 
     Eigen::Affine3d epose;
     tf::poseMsgToEigen(pose, epose);
-    rs->setJointPositions(getRobotModel()->getRootJoint(), epose);
-    rs->update();
-    planning_scene_robot_->update(robot_state::RobotStateConstPtr(rs));    
+    rs.setJointPositions(getRobotModel()->getRootJoint(), epose);
+    rs.update();
+    planning_scene_robot_->update(robot_state::RobotStateConstPtr(new robot_state::RobotState(rs)));
+
+    ROS_INFO("Coll: %d", ps->isStateColliding());
+    ROS_INFO("Valid: %d", ps->isStateValid(rs));
+
     server_->setPose(feedback->marker_name, pose);
   }
 }
